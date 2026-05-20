@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>顔写真 4:3 自動切り抜き</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Shippori+Mincho:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f0f0d;--surface:#1a1a17;--surface2:#242420;
+  --border:rgba(255,255,255,0.08);--border2:rgba(255,255,255,0.16);
+  --text:#f0ede6;--muted:#8a8780;--dim:#4a4844;
+  --accent:#c8b97a;--adim:rgba(200,185,122,0.13);
+  --green:#70c89a;--red:#e07070;--blue:#7ab0c8;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;font-size:13px;overflow:hidden;user-select:none;}
+
+/* ── HEADER ── */
+header{display:flex;align-items:center;gap:12px;padding:13px 22px;border-bottom:1px solid var(--border);background:var(--bg);z-index:30;position:relative;}
+.logo{width:26px;height:26px;border:1.5px solid var(--accent);border-radius:4px;display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:9px;font-weight:500;flex-shrink:0;}
+header h1{font-family:'Shippori Mincho',serif;font-size:15px;font-weight:600;letter-spacing:.06em;}
+.badge{font-size:10px;color:var(--accent);background:var(--adim);border:1px solid rgba(200,185,122,.25);border-radius:4px;padding:3px 9px;letter-spacing:.1em;}
+#model-status{margin-left:auto;font-size:10px;display:flex;align-items:center;gap:6px;color:var(--dim);}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--dim);}
+.dot.spin{background:var(--accent);animation:blink 1s ease-in-out infinite;}
+.dot.ok{background:var(--green);}
+.dot.err{background:var(--red);}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* ── LAYOUT ── */
+.body{display:flex;height:calc(100vh - 53px);}
+
+/* ── FILE PANEL ── */
+#fpanel{width:210px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface);}
+#fp-head{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+#fp-head span{font-size:9px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase;}
+.btn-add{background:var(--adim);border:1px solid rgba(200,185,122,.3);color:var(--accent);font-family:'DM Mono',monospace;font-size:11px;padding:4px 10px;border-radius:4px;cursor:pointer;}
+.btn-add:hover{background:rgba(200,185,122,.22);}
+#flist{flex:1;overflow-y:auto;padding:7px;position:relative;}
+#flist::-webkit-scrollbar{width:3px;}
+#flist::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+#flist-drop{position:absolute;inset:7px;border-radius:6px;background:rgba(200,185,122,.06);border:1.5px dashed rgba(200,185,122,.35);display:none;align-items:center;justify-content:center;font-size:11px;color:var(--accent);z-index:5;pointer-events:none;}
+#fpanel.over #flist-drop{display:flex;}
+.fi{display:flex;align-items:center;gap:7px;padding:7px 9px;border-radius:6px;cursor:pointer;border:1px solid transparent;margin-bottom:3px;transition:all .11s;}
+.fi:hover{background:var(--surface2);}
+.fi.active{background:var(--adim);border-color:rgba(200,185,122,.3);}
+.fi-thumb{width:36px;height:27px;border-radius:3px;object-fit:cover;background:var(--surface2);flex-shrink:0;border:1px solid var(--border);}
+.fi-col{flex:1;min-width:0;}
+.fi-name{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fi-st{font-size:9px;color:var(--dim);margin-top:1px;}
+.fi-st.ok{color:var(--green);}
+.fi-st.working{color:var(--accent);}
+.fi-st.err{color:var(--red);}
+.fi-del{width:18px;height:18px;border:none;background:transparent;color:var(--dim);cursor:pointer;font-size:15px;line-height:1;display:flex;align-items:center;justify-content:center;opacity:0;border-radius:3px;flex-shrink:0;}
+.fi:hover .fi-del{opacity:1;}
+.fi-del:hover{background:rgba(224,112,112,.15);color:var(--red);}
+#fp-foot{padding:10px 10px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:7px;}
+#pbar-wrap{height:2px;background:var(--border);border-radius:1px;overflow:hidden;display:none;}
+#pbar{height:100%;background:var(--accent);width:0%;transition:width .2s;}
+
+/* ── CANVAS AREA ── */
+#carea{flex:1;display:flex;align-items:center;justify-content:center;background:#070706;overflow:hidden;position:relative;}
+#empty{display:flex;flex-direction:column;align-items:center;gap:14px;color:var(--dim);}
+.ei{width:54px;height:54px;border:1.5px solid var(--border2);border-radius:10px;display:flex;align-items:center;justify-content:center;}
+#empty p{font-size:12px;}
+#cwrap{position:relative;display:none;box-shadow:0 0 80px rgba(0,0,0,.7);}
+/* キャンバスはCSS sizeをJSで制御 */
+#mc{display:block;}
+/* オーバーレイはpointer-eventsをJSで制御 */
+#oc{position:absolute;top:0;left:0;display:block;}
+
+/* ── SIDEBAR ── */
+#sb{width:252px;flex-shrink:0;border-left:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;}
+#sb::-webkit-scrollbar{width:3px;}
+#sb::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.sbs{padding:14px 15px;border-bottom:1px solid var(--border);}
+.st{font-size:9px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase;margin-bottom:11px;}
+
+/* AUTO DETECT big button */
+#auto-btn{
+  width:100%;padding:13px 10px;
+  font-family:'DM Mono',monospace;font-size:12px;font-weight:500;letter-spacing:.06em;
+  background:linear-gradient(135deg,rgba(122,176,200,.18),rgba(122,176,200,.08));
+  color:var(--blue);
+  border:1px solid rgba(122,176,200,.3);
+  border-radius:8px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:9px;
+  transition:background .15s,transform .1s;
+  position:relative;overflow:hidden;
+}
+#auto-btn:hover{background:linear-gradient(135deg,rgba(122,176,200,.28),rgba(122,176,200,.14));}
+#auto-btn:active{transform:scale(.98);}
+#auto-btn:disabled{opacity:.32;cursor:not-allowed;}
+#auto-btn .shine{position:absolute;inset:0;background:linear-gradient(105deg,transparent 30%,rgba(255,255,255,.06) 50%,transparent 70%);transform:translateX(-100%);transition:transform .5s;}
+#auto-btn:not(:disabled):hover .shine{transform:translateX(100%);}
+
+#auto-result{font-size:10px;margin-top:9px;padding:6px 10px;border-radius:5px;background:var(--surface2);color:var(--muted);line-height:1.55;min-height:30px;}
+#auto-result.ok{color:var(--green);}
+#auto-result.ng{color:var(--red);}
+
+/* Padding / scale inputs */
+.param-row{display:flex;align-items:center;gap:8px;margin-bottom:9px;}
+.param-row:last-child{margin-bottom:0;}
+.param-label{font-size:11px;color:var(--muted);flex:1;}
+input[type=number]{width:60px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);font-family:'DM Mono',monospace;font-size:11px;padding:4px 7px;border-radius:4px;outline:none;text-align:center;-moz-appearance:textfield;}
+input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
+input[type=number]:focus{border-color:var(--accent);}
+.param-unit{font-size:10px;color:var(--dim);width:16px;}
+
+/* detect-all */
+#detect-all-btn{width:100%;padding:7px;font-family:'DM Mono',monospace;font-size:10px;background:transparent;color:var(--muted);border:1px solid var(--border2);border-radius:5px;cursor:pointer;margin-top:7px;transition:background .13s;}
+#detect-all-btn:hover{background:var(--surface2);color:var(--text);}
+#detect-all-btn:disabled{opacity:.3;cursor:not-allowed;}
+
+/* divider */
+.div-label{font-size:9px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;display:flex;align-items:center;gap:7px;margin:12px 0 10px;}
+.div-label::before,.div-label::after{content:'';flex:1;height:1px;background:var(--border);}
+
+/* sliders */
+.sg{margin-bottom:11px;}
+.sg:last-child{margin-bottom:0;}
+.sl{display:flex;justify-content:space-between;margin-bottom:6px;color:var(--muted);font-size:11px;}
+.sl span{color:var(--accent);}
+input[type=range]{-webkit-appearance:none;width:100%;height:2px;background:var(--border2);outline:none;border-radius:1px;}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:var(--accent);cursor:pointer;box-shadow:0 0 0 3px var(--adim);transition:box-shadow .14s;}
+input[type=range]::-webkit-slider-thumb:hover{box-shadow:0 0 0 5px var(--adim);}
+
+.apply-row{display:flex;gap:6px;margin-top:9px;}
+.btn-sm{flex:1;padding:7px;font-family:'DM Mono',monospace;font-size:10px;background:var(--adim);color:var(--accent);border:1px solid rgba(200,185,122,.22);border-radius:5px;cursor:pointer;transition:background .13s;}
+.btn-sm:hover{background:rgba(200,185,122,.22);}
+
+/* preview */
+#prev{display:block;width:100%;height:auto;border-radius:4px;border:1px solid var(--border);}
+
+/* footer */
+#sb-foot{margin-top:auto;padding:12px 15px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:7px;}
+.btn-p{width:100%;padding:10px;font-family:'DM Mono',monospace;font-size:11px;font-weight:500;letter-spacing:.07em;background:var(--accent);color:#0f0f0d;border:none;border-radius:6px;cursor:pointer;transition:opacity .14s,transform .1s;}
+.btn-p:hover{opacity:.88;}
+.btn-p:active{transform:scale(.98);}
+.btn-p:disabled{opacity:.28;cursor:not-allowed;}
+.btn-s{width:100%;padding:7px;font-family:'DM Mono',monospace;font-size:10px;background:transparent;color:var(--muted);border:1px solid var(--border2);border-radius:6px;cursor:pointer;transition:background .13s;}
+.btn-s:hover{background:var(--surface2);color:var(--text);}
+.btn-s:disabled{opacity:.28;cursor:not-allowed;}
+
+#file-input{display:none;}
+@keyframes fi-in{from{opacity:0;transform:translateX(-5px)}to{opacity:1;transform:none}}
+.fi{animation:fi-in .17s ease;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">FC</div>
+  <h1>顔写真 自動切り抜き</h1>
+  <div class="badge">4 : 3</div>
+  <div id="model-status">
+    <div class="dot spin" id="mdot"></div>
+    <span id="mtxt">モデル読み込み中...</span>
+  </div>
+</header>
+
+<div class="body">
+
+  <!-- file panel -->
+  <div id="fpanel">
+    <div id="fp-head">
+      <span>ファイル</span>
+      <button class="btn-add" onclick="document.getElementById('file-input').click()">+ 追加</button>
+    </div>
+    <div id="flist"><div id="flist-drop">ここにドロップ</div></div>
+    <div id="fp-foot">
+      <div id="pbar-wrap"><div id="pbar"></div></div>
+      <button class="btn-p" id="zip-btn" disabled>↓ 全件 ZIP</button>
+    </div>
+  </div>
+
+  <!-- canvas -->
+  <div id="carea">
+    <div id="empty">
+      <div class="ei">
+        <svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round">
+          <rect x="2" y="4" width="22" height="18" rx="2"/>
+          <circle cx="9" cy="11" r="2.5"/>
+          <path d="M2 20l7-6 5 4 4-3 10 8"/>
+        </svg>
+      </div>
+      <p>写真を追加してください</p>
+    </div>
+    <div id="cwrap">
+      <canvas id="mc"></canvas>
+      <canvas id="oc"></canvas>
+    </div>
+  </div>
+
+  <!-- sidebar -->
+  <div id="sb">
+
+    <!-- auto detect -->
+    <div class="sbs">
+      <div class="st">自動顔検出</div>
+
+      <div class="param-row">
+        <div class="param-label">余白</div>
+        <input type="number" id="pad" value="20" min="0" max="500">
+        <span class="param-unit">px</span>
+      </div>
+      <div class="param-row">
+        <div class="param-label">顔の拡大率</div>
+        <input type="number" id="fscale" value="130" min="50" max="400">
+        <span class="param-unit">%</span>
+      </div>
+
+      <button id="auto-btn" disabled style="margin-top:10px;">
+        <div class="shine"></div>
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+          <circle cx="6" cy="6" r="4.5"/>
+          <circle cx="6" cy="6" r="1.8"/>
+          <line x1="9.5" y1="9.5" x2="13" y2="13"/>
+        </svg>
+        顔を自動判定してトリミング
+      </button>
+
+      <div id="auto-result">顔を自動検出して切り抜き範囲を設定します</div>
+      <button id="detect-all-btn" disabled>全件まとめて自動判定</button>
+    </div>
+
+    <!-- manual -->
+    <div class="sbs">
+      <div class="div-label">手動調整</div>
+      <div class="sg">
+        <div class="sl">サイズ <span id="sv">60%</span></div>
+        <input type="range" id="ss" min="5" max="100" value="60">
+      </div>
+      <div class="sg">
+        <div class="sl">水平位置 <span id="xv">50%</span></div>
+        <input type="range" id="xs" min="0" max="100" value="50">
+      </div>
+      <div class="sg">
+        <div class="sl">垂直位置 <span id="yv">50%</span></div>
+        <input type="range" id="ys" min="0" max="100" value="50">
+      </div>
+      <div class="apply-row">
+        <button class="btn-sm" id="save-btn">保存</button>
+        <button class="btn-sm" id="all-btn">全件に適用</button>
+      </div>
+    </div>
+
+    <!-- preview -->
+    <div class="sbs">
+      <div class="st">プレビュー (4:3)</div>
+      <canvas id="prev"></canvas>
+    </div>
+
+    <div id="sb-foot">
+      <button class="btn-p" id="dl1-btn" disabled>↓ この1枚をダウンロード</button>
+      <button class="btn-s" id="clr-btn">すべてクリア</button>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="file-input" accept="image/*" multiple>
+
+<script>
+// ─── globals ───────────────────────────────────────────
+const MODEL_URL = 'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights';
+let modelsReady = false;
+let files = [], activeId = null, idCtr = 0;
+
+// canvas drag state
+let isDragging = false;
+let dragPrevX = 0, dragPrevY = 0;
+
+// elements
+const $fi   = document.getElementById('file-input');
+const $fp   = document.getElementById('fpanel');
+const $fl   = document.getElementById('flist');
+const $cw   = document.getElementById('cwrap');
+const $em   = document.getElementById('empty');
+const mc    = document.getElementById('mc');
+const oc    = document.getElementById('oc');
+const prev  = document.getElementById('prev');
+const mCtx  = mc.getContext('2d');
+const oCtx  = oc.getContext('2d');
+const pCtx  = prev.getContext('2d');
+
+// ─── model loading ──────────────────────────────────────
+window.addEventListener('load', () => {
+  setTimeout(async () => {
+    if (typeof faceapi === 'undefined') {
+      setStatus('err','ライブラリ未ロード'); return;
+    }
+    try {
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+        faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
+      ]);
+      modelsReady = true;
+      setStatus('ok','顔検出 準備完了');
+      document.getElementById('auto-btn').disabled = !activeId;
+      document.getElementById('detect-all-btn').disabled = files.length === 0;
+    } catch(e) {
+      setStatus('err','モデル読み込み失敗');
+    }
+  }, 600);
+});
+
+function setStatus(type, txt) {
+  document.getElementById('mdot').className = 'dot ' + type;
+  document.getElementById('mtxt').textContent = txt;
+}
+
+// ─── file handling ──────────────────────────────────────
+$fi.addEventListener('change', () => addFiles(Array.from($fi.files)));
+$fp.addEventListener('dragover', e => { e.preventDefault(); $fp.classList.add('over'); });
+$fp.addEventListener('dragleave', e => { if (!$fp.contains(e.relatedTarget)) $fp.classList.remove('over'); });
+$fp.addEventListener('drop', e => {
+  e.preventDefault(); $fp.classList.remove('over');
+  addFiles(Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/')));
+});
+
+function addFiles(list) {
+  list.forEach(file => {
+    const r = new FileReader();
+    r.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        const id = ++idCtr;
+        const tc = document.createElement('canvas');
+        const ts = Math.min(1, 80/img.width, 60/img.height);
+        tc.width = Math.round(img.width*ts); tc.height = Math.round(img.height*ts);
+        tc.getContext('2d').drawImage(img,0,0,tc.width,tc.height);
+        files.push({ id, name:file.name, img, cropX:.5, cropY:.5, cropSize:.6, thumb:tc.toDataURL('image/jpeg',.7), detected:false });
+        renderList();
+        if (files.length === 1) setActive(id);
+        updBatch();
+        if (modelsReady) document.getElementById('detect-all-btn').disabled = false;
+      };
+      img.src = e.target.result;
+    };
+    r.readAsDataURL(file);
+  });
+  $fi.value = '';
+}
+
+// ─── file list rendering ────────────────────────────────
+function renderList() {
+  const drop = document.getElementById('flist-drop');
+  $fl.innerHTML = '';
+  $fl.appendChild(drop);
+  files.forEach(f => {
+    const el = document.createElement('div');
+    el.className = 'fi' + (f.id===activeId?' active':'');
+    el.dataset.id = f.id;
+    const sc = f.detected?'ok':f.working?'working':'';
+    const st = f.detected?'✓ 検出済み':f.working?'検出中...':'未処理';
+    el.innerHTML = `
+      <img class="fi-thumb" src="${f.thumb}">
+      <div class="fi-col">
+        <div class="fi-name">${f.name}</div>
+        <div class="fi-st ${sc}">${st}</div>
+      </div>
+      <button class="fi-del">×</button>`;
+    el.querySelector('.fi-del').addEventListener('click', e => { e.stopPropagation(); removeFile(f.id); });
+    el.addEventListener('click', () => setActive(f.id));
+    $fl.appendChild(el);
+  });
+  if (modelsReady) document.getElementById('detect-all-btn').disabled = files.length===0;
+}
+
+function removeFile(id) {
+  files = files.filter(f => f.id!==id);
+  if (activeId===id) { activeId=files.length>0?files[0].id:null; activeId?loadActive():showEmpty(); }
+  renderList(); updBatch();
+}
+
+function showEmpty() {
+  $cw.style.display='none'; $em.style.display='flex';
+  document.getElementById('dl1-btn').disabled=true;
+  document.getElementById('auto-btn').disabled=true;
+}
+
+// ─── active file ────────────────────────────────────────
+function setActive(id) { saveCrop(); activeId=id; renderList(); loadActive(); }
+
+function saveCrop() {
+  if (!activeId) return;
+  const f = files.find(f=>f.id===activeId); if(!f) return;
+  f.cropX = +document.getElementById('xs').value/100;
+  f.cropY = +document.getElementById('ys').value/100;
+  f.cropSize = +document.getElementById('ss').value/100;
+}
+
+function loadActive() {
+  const f = files.find(f=>f.id===activeId); if(!f) return;
+  $em.style.display='none'; $cw.style.display='block';
+  document.getElementById('dl1-btn').disabled=false;
+  document.getElementById('auto-btn').disabled=!modelsReady;
+
+  // fit canvas to area
+  const area = document.getElementById('carea');
+  const maxW = area.clientWidth - 60, maxH = area.clientHeight - 60;
+  const scale = Math.min(1, maxW/f.img.width, maxH/f.img.height);
+  const dW = Math.round(f.img.width*scale), dH = Math.round(f.img.height*scale);
+  mc.width=dW; mc.height=dH;
+  oc.width=dW; oc.height=dH;
+  // position overlay exactly
+  oc.style.width=dW+'px'; oc.style.height=dH+'px';
+  oc.style.left='0'; oc.style.top='0';
+  mc.style.display='block'; oc.style.display='block';
+  mCtx.drawImage(f.img,0,0,dW,dH);
+
+  setSliders(f.cropX, f.cropY, f.cropSize);
+  redraw();
+
+  const ar = document.getElementById('auto-result');
+  ar.textContent = f.detected?'✓ 顔が検出されました':'顔を自動検出して切り抜き範囲を設定します';
+  ar.className = 'auto-result' + (f.detected?' ok':'');  // uses #auto-result id style
+  document.getElementById('auto-result').className = f.detected?'ok':'';
+}
+
+function setSliders(cx,cy,cs) {
+  document.getElementById('ss').value=Math.round(cs*100);
+  document.getElementById('xs').value=Math.round(cx*100);
+  document.getElementById('ys').value=Math.round(cy*100);
+  document.getElementById('sv').textContent=Math.round(cs*100)+'%';
+  document.getElementById('xv').textContent=Math.round(cx*100)+'%';
+  document.getElementById('yv').textContent=Math.round(cy*100)+'%';
+}
+
+// ─── crop rect ──────────────────────────────────────────
+function getCropRect(W,H,cx,cy,cs) {
+  const minD = Math.min(W,H);
+  const cW = Math.round(minD*cs);
+  const cH = Math.round(cW*3/4);
+  let x = Math.max(0,Math.min(W-cW, Math.round(cx*W-cW/2)));
+  let y = Math.max(0,Math.min(H-cH, Math.round(cy*H-cH/2)));
+  return {x,y,w:cW,h:cH};
+}
+
+function currentCrop() {
+  return getCropRect(mc.width,mc.height,
+    +document.getElementById('xs').value/100,
+    +document.getElementById('ys').value/100,
+    +document.getElementById('ss').value/100);
+}
+
+// ─── draw ───────────────────────────────────────────────
+function redraw() {
+  const f = files.find(f=>f.id===activeId); if(!f) return;
+  const {x,y,w,h} = currentCrop();
+
+  oCtx.clearRect(0,0,oc.width,oc.height);
+  oCtx.fillStyle='rgba(0,0,0,.56)';
+  oCtx.fillRect(0,0,oc.width,oc.height);
+  oCtx.clearRect(x,y,w,h);
+
+  // frame
+  oCtx.strokeStyle='rgba(200,185,122,.9)'; oCtx.lineWidth=1.5;
+  oCtx.strokeRect(x,y,w,h);
+
+  // corners
+  const cs=14; oCtx.lineWidth=2.5; oCtx.strokeStyle='#c8b97a';
+  [[x,y],[x+w,y],[x,y+h],[x+w,y+h]].forEach(([px,py],i)=>{
+    const sx=i%2===0?1:-1, sy=i<2?1:-1;
+    oCtx.beginPath(); oCtx.moveTo(px+sx*cs,py); oCtx.lineTo(px,py); oCtx.lineTo(px,py+sy*cs); oCtx.stroke();
+  });
+
+  // thirds
+  oCtx.strokeStyle='rgba(200,185,122,.2)'; oCtx.lineWidth=.5;
+  for(let i=1;i<3;i++){
+    oCtx.beginPath(); oCtx.moveTo(x+w*i/3,y); oCtx.lineTo(x+w*i/3,y+h); oCtx.stroke();
+    oCtx.beginPath(); oCtx.moveTo(x,y+h*i/3); oCtx.lineTo(x+w,y+h*i/3); oCtx.stroke();
+  }
+
+  // preview
+  const pw=222,ph=Math.round(pw*3/4);
+  prev.width=pw; prev.height=ph;
+  const sx=x/mc.width*f.img.width, sy=y/mc.height*f.img.height;
+  const sw=w/mc.width*f.img.width, sh=h/mc.height*f.img.height;
+  pCtx.drawImage(f.img,sx,sy,sw,sh,0,0,pw,ph);
+}
+
+// ─── sliders ────────────────────────────────────────────
+['ss','xs','ys'].forEach((id,i) => {
+  document.getElementById(id).addEventListener('input', function(){
+    document.getElementById(['sv','xv','yv'][i]).textContent=this.value+'%';
+    redraw();
+  });
+});
+
+// ─── CANVAS DRAG (pointer events – works in all contexts) ─
+oc.style.cursor='move';
+oc.style.touchAction='none';
+
+oc.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  oc.setPointerCapture(e.pointerId);
+  isDragging = true;
+  dragPrevX = e.clientX;
+  dragPrevY = e.clientY;
+});
+
+oc.addEventListener('pointermove', e => {
+  if (!isDragging) return;
+  e.preventDefault();
+
+  const dx = e.clientX - dragPrevX;
+  const dy = e.clientY - dragPrevY;
+  dragPrevX = e.clientX;
+  dragPrevY = e.clientY;
+
+  // rect dimensions to move offset
+  const rect = oc.getBoundingClientRect();
+  const scaleX = oc.width / rect.width;
+  const scaleY = oc.height / rect.height;
+
+  const xs = document.getElementById('xs');
+  const ys = document.getElementById('ys');
+  const ss = document.getElementById('ss');
+
+  const minD = Math.min(mc.width,mc.height);
+  const cropW = Math.round(minD*(+ss.value/100));
+  const cropH = Math.round(cropW*3/4);
+
+  // current center in canvas pixels
+  let cx = (+xs.value/100)*mc.width;
+  let cy = (+ys.value/100)*mc.height;
+
+  cx += dx*scaleX;
+  cy += dy*scaleY;
+
+  // clamp so crop stays in image
+  cx = Math.max(cropW/2, Math.min(mc.width-cropW/2, cx));
+  cy = Math.max(cropH/2, Math.min(mc.height-cropH/2, cy));
+
+  const newX = Math.round(cx/mc.width*100);
+  const newY = Math.round(cy/mc.height*100);
+
+  xs.value=newX; ys.value=newY;
+  document.getElementById('xv').textContent=newX+'%';
+  document.getElementById('yv').textContent=newY+'%';
+  redraw();
+});
+
+oc.addEventListener('pointerup',   () => { isDragging=false; });
+oc.addEventListener('pointercancel',()=> { isDragging=false; });
+
+// ─── face detection ─────────────────────────────────────
+async function detectOne(entry) {
+  const pad = Math.max(0, parseInt(document.getElementById('pad').value)||20);
+  const fsc = Math.max(50, parseInt(document.getElementById('fscale').value)||130) / 100;
+
+  entry.working=true; entry.detected=false; renderList();
+
+  try {
+    const det = await faceapi.detectSingleFace(
+      entry.img,
+      new faceapi.TinyFaceDetectorOptions({ inputSize:416, scoreThreshold:.28 })
+    );
+    entry.working=false;
+    if (!det) { renderList(); return false; }
+
+    const {x:fx,y:fy,width:fw,height:fh} = det.box;
+    const iW=entry.img.width, iH=entry.img.height;
+
+    // expand face box by scale factor
+    const exW=fw*fsc, exH=fh*fsc;
+    const fcx=fx+fw/2, fcy=fy+fh/2;
+
+    // region including padding
+    const rW=exW+pad*2, rH=exH+pad*2;
+
+    // fit 4:3
+    let cW,cH;
+    if(rW/rH>=4/3){ cW=rW; cH=cW*3/4; }
+    else { cH=rH; cW=cH*4/3; }
+    cW=Math.min(cW,iW); cH=Math.min(cH,iH);
+
+    let cx=fcx-cW/2, cy=fcy-cH/2;
+    cx=Math.max(0,Math.min(iW-cW,cx));
+    cy=Math.max(0,Math.min(iH-cH,cy));
+
+    const minD=Math.min(iW,iH);
+    entry.cropSize=Math.min(1, cW/minD);
+    entry.cropX=Math.max(0,Math.min(1,(cx+cW/2)/iW));
+    entry.cropY=Math.max(0,Math.min(1,(cy+cH/2)/iH));
+    entry.detected=true;
+    renderList();
+    return true;
+  } catch(e) {
+    entry.working=false; renderList(); return false;
+  }
+}
+
+document.getElementById('auto-btn').addEventListener('click', async () => {
+  if (!activeId||!modelsReady) return;
+  saveCrop();
+  const entry=files.find(f=>f.id===activeId); if(!entry) return;
+  const btn=document.getElementById('auto-btn');
+  btn.disabled=true; btn.querySelector('svg').style.opacity='.4';
+  const ar=document.getElementById('auto-result');
+  ar.textContent='検出中...'; ar.className='';
+
+  const ok=await detectOne(entry);
+  btn.disabled=false; btn.querySelector('svg').style.opacity='1';
+  if(ok){
+    ar.textContent='✓ 顔を検出しました！切り抜き範囲を自動調整しました'; ar.className='ok';
+    setSliders(entry.cropX,entry.cropY,entry.cropSize); redraw();
+  } else {
+    ar.textContent='顔を検出できませんでした。手動で調整してください。'; ar.className='ng';
+  }
+});
+
+document.getElementById('detect-all-btn').addEventListener('click', async () => {
+  if(!modelsReady||files.length===0) return;
+  saveCrop();
+  const btn=document.getElementById('detect-all-btn');
+  btn.disabled=true;
+  const wrap=document.getElementById('pbar-wrap');
+  const bar=document.getElementById('pbar');
+  wrap.style.display='block'; bar.style.width='0%';
+
+  for(let i=0;i<files.length;i++){
+    await detectOne(files[i]);
+    bar.style.width=Math.round((i+1)/files.length*100)+'%';
+    btn.textContent=`${i+1}/${files.length} 処理中...`;
+    if(files[i].id===activeId){ setSliders(files[i].cropX,files[i].cropY,files[i].cropSize); redraw(); }
+    await new Promise(r=>setTimeout(r,30));
+  }
+
+  setTimeout(()=>{ wrap.style.display='none'; bar.style.width='0%'; },700);
+  btn.disabled=false; btn.textContent='全件まとめて自動判定';
+  renderList();
+});
+
+// ─── manual controls ─────────────────────────────────────
+document.getElementById('save-btn').addEventListener('click',()=>{
+  saveCrop();
+  const el=$fl.querySelector(`.fi[data-id="${activeId}"] .fi-st`);
+  if(el){el.textContent='✓ 保存済み';el.className='fi-st ok';}
+});
+
+document.getElementById('all-btn').addEventListener('click',()=>{
+  const cx=+document.getElementById('xs').value/100;
+  const cy=+document.getElementById('ys').value/100;
+  const cs=+document.getElementById('ss').value/100;
+  files.forEach(f=>{f.cropX=cx;f.cropY=cy;f.cropSize=cs;});
+  $fl.querySelectorAll('.fi-st').forEach(el=>{el.textContent='✓ 保存済み';el.className='fi-st ok';});
+});
+
+// ─── blob helper ─────────────────────────────────────────
+function toBlob(entry){
+  const iW=entry.img.width,iH=entry.img.height;
+  const minD=Math.min(iW,iH);
+  const cW=Math.round(minD*entry.cropSize);
+  const cH=Math.round(cW*3/4);
+  let x=Math.max(0,Math.min(iW-cW,Math.round(entry.cropX*iW-cW/2)));
+  let y=Math.max(0,Math.min(iH-cH,Math.round(entry.cropY*iH-cH/2)));
+  const out=document.createElement('canvas');
+  out.width=cW;out.height=cH;
+  out.getContext('2d').drawImage(entry.img,x,y,cW,cH,0,0,cW,cH);
+  const d=out.toDataURL('image/jpeg',.92);
+  const b=atob(d.split(',')[1]);
+  const a=new Uint8Array(b.length);
+  for(let i=0;i<b.length;i++)a[i]=b.charCodeAt(i);
+  return new Blob([a],{type:'image/jpeg'});
+}
+
+// ─── single download ─────────────────────────────────────
+document.getElementById('dl1-btn').addEventListener('click',()=>{
+  const f=files.find(f=>f.id===activeId);if(!f)return;
+  saveCrop();
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(toBlob(f));
+  a.download=f.name.replace(/\.[^.]+$/,'')+'_4x3.jpg';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+});
+
+// ─── zip download ─────────────────────────────────────────
+document.getElementById('zip-btn').addEventListener('click',async()=>{
+  saveCrop();
+  const btn=document.getElementById('zip-btn');
+  btn.disabled=true;btn.textContent='処理中...';
+  const wrap=document.getElementById('pbar-wrap');
+  const bar=document.getElementById('pbar');
+  wrap.style.display='block';bar.style.width='0%';
+  const zip=new JSZip();
+  for(let i=0;i<files.length;i++){
+    zip.file(files[i].name.replace(/\.[^.]+$/,'')+'_4x3.jpg',toBlob(files[i]));
+    bar.style.width=Math.round((i+1)/files.length*100)+'%';
+    await new Promise(r=>setTimeout(r,10));
+  }
+  const zb=await zip.generateAsync({type:'blob'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(zb);
+  a.download='face_crops_4x3.zip';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(()=>{URL.revokeObjectURL(a.href);wrap.style.display='none';bar.style.width='0%';},2000);
+  btn.disabled=false;btn.textContent='↓ 全件 ZIP';
+});
+
+// ─── clear ───────────────────────────────────────────────
+document.getElementById('clr-btn').addEventListener('click',()=>{
+  files=[];activeId=null;renderList();showEmpty();updBatch();
+});
+
+function updBatch(){document.getElementById('zip-btn').disabled=files.length===0;}
+</script>
+</body>
+</html>
